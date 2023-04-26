@@ -203,6 +203,28 @@ export class QueryBuilder {
     }
   }
 
+  addGeoBoundFilter(query: any, field: any, settings: any) {
+    if (!settings) {
+      return;
+    }
+
+    const left = settings?.left;
+    const top = settings?.top;
+    const right = settings?.right;
+    const bottom = settings?.bottom;
+
+    if (!left || !top || !right || !bottom) {
+      return;
+    }
+    if (left.length === 0 || top.length === 0 || right.length === 0 || bottom.length === 0) {
+      return;
+    }
+
+    let condition = {};
+    condition[field] = { bottom_right: { lat: bottom, lon: right }, top_left: { lat: top, lon: left } };
+    query.query.bool.filter.push({ geo_bounding_box: condition });
+  }
+
   build(target: OpenSearchQuery, adhocFilters?: any, queryString?: string) {
     // make sure query has defaults;
     target.metrics = target.metrics || [defaultMetricAgg()];
@@ -285,6 +307,7 @@ export class QueryBuilder {
             field: aggDef.field,
             precision: aggDef.settings?.precision,
           };
+          this.addGeoBoundFilter(query, aggDef.field, aggDef.settings);
           break;
         }
       }
