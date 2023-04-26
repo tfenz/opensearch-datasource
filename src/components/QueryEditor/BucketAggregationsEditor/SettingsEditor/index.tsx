@@ -76,14 +76,66 @@ export const SettingsEditor = ({ bucketAgg }: Props) => {
       )}
 
       {bucketAgg.type === 'geohash_grid' && (
-        <InlineField label="Precision" {...inlineFieldProps}>
-          <Input
-            onBlur={e => dispatch(changeBucketAggregationSetting(bucketAgg, 'precision', e.target.value!))}
-            defaultValue={
-              bucketAgg.settings?.precision || bucketAggregationConfig[bucketAgg.type].defaultSettings?.precision
-            }
-          />
-        </InlineField>
+        <>
+          <InlineField label="Precision" {...inlineFieldProps}>
+            <Input
+              onBlur={e => dispatch(changeBucketAggregationSetting(bucketAgg, 'precision', e.target.value!))}
+              defaultValue={
+                bucketAgg.settings?.precision || bucketAggregationConfig[bucketAgg.type].defaultSettings?.precision
+              }
+            />
+          </InlineField>
+
+          <InlineField
+            label="Left"
+            {...inlineFieldProps}
+            tooltip="Left value of geo bounding box filter. Only documents whose geopoints 
+            are within the bounding box specified are returned. By default geo bounding box filter is ignored."
+          >
+            <Input
+              onBlur={e => dispatch(changeBucketAggregationSetting(bucketAgg, 'left', e.target.value!))}
+              defaultValue={bucketAgg.settings?.left || bucketAggregationConfig[bucketAgg.type].defaultSettings?.left}
+            />
+          </InlineField>
+
+          <InlineField
+            label="Top"
+            {...inlineFieldProps}
+            tooltip="Top value of geo bounding box filter. Only documents whose geopoints 
+            are within the bounding box specified are returned. By default geo bounding box filter is ignored."
+          >
+            <Input
+              onBlur={e => dispatch(changeBucketAggregationSetting(bucketAgg, 'top', e.target.value!))}
+              defaultValue={bucketAgg.settings?.top || bucketAggregationConfig[bucketAgg.type].defaultSettings?.top}
+            />
+          </InlineField>
+
+          <InlineField
+            label="Right"
+            {...inlineFieldProps}
+            tooltip="Right value of geo bounding box filter. Only documents whose geopoints 
+            are within the bounding box specified are returned. By default geo bounding box filter is ignored."
+          >
+            <Input
+              onBlur={e => dispatch(changeBucketAggregationSetting(bucketAgg, 'right', e.target.value!))}
+              defaultValue={bucketAgg.settings?.right || bucketAggregationConfig[bucketAgg.type].defaultSettings?.right}
+            />
+          </InlineField>
+
+          <InlineField
+            label="Bottom"
+            {...inlineFieldProps}
+            tooltip="Bottom value of geo bounding box filter. Only documents whose geopoints 
+            are within the bounding box specified are returned. By default geo bounding box filter is ignored."
+          >
+            <Input
+              onBlur={e => dispatch(changeBucketAggregationSetting(bucketAgg, 'bottom', e.target.value!))}
+              defaultValue={
+                bucketAgg.settings?.bottom || bucketAggregationConfig[bucketAgg.type].defaultSettings?.bottom
+              }
+            />
+          </InlineField>
+        </>
       )}
 
       {bucketAgg.type === 'date_histogram' && (

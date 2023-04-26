@@ -2,6 +2,7 @@ import { describeMetric } from '../../../../utils';
 import { useQuery } from '../../OpenSearchQueryContext';
 import { BucketAggregation } from '../aggregations';
 import { bucketAggregationConfig, orderByOptions, orderOptions } from '../utils';
+import { getTemplateSrv } from '@grafana/runtime';
 
 const hasValue = (value: string) => (object: { value: string }) => object.value === value;
 
@@ -50,7 +51,7 @@ export const useDescription = (bucketAgg: BucketAggregation): string => {
 
     case 'histogram': {
       const interval = bucketAgg.settings?.interval || 1000;
-      const minDocCount = bucketAgg.settings?.min_doc_count || 1;
+      const minDocCount = Number(bucketAgg.settings?.min_doc_count) || 1;
 
       return `Interval: ${interval}${minDocCount > 0 ? `, Min Doc Count: ${minDocCount}` : ''}`;
     }
@@ -62,13 +63,27 @@ export const useDescription = (bucketAgg: BucketAggregation): string => {
 
     case 'geohash_grid': {
       const precision = Math.max(Math.min(parseInt(bucketAgg.settings?.precision || '5', 10), 12), 1);
-      return `Precision: ${precision}`;
+      let description = `Precision: ${precision}`;
+
+      const left = bucketAgg.settings?.left;
+      const top = bucketAgg.settings?.top;
+      const right = bucketAgg.settings?.right;
+      const bottom = bucketAgg.settings?.bottom;
+
+      if (!left || !top || !right || !bottom) {
+        return description;
+      }
+      if (left.length === 0 || top.length === 0 || right.length === 0 || bottom.length === 0) {
+        return description;
+      }
+      description += `, Bounding Box: ((${left}, ${top}), (${right}, ${bottom}))`;
+      return description;
     }
 
     case 'date_histogram': {
       const interval = bucketAgg.settings?.interval || 'auto';
-      const minDocCount = bucketAgg.settings?.min_doc_count || 0;
-      const trimEdges = bucketAgg.settings?.trimEdges || 0;
+      const minDocCount = Number(bucketAgg.settings?.min_doc_count) || 0;
+      const trimEdges = Number(bucketAgg.settings?.trimEdges) || 0;
 
       let description = `Interval: ${interval}`;
 
