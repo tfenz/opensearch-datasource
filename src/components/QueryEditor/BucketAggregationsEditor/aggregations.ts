@@ -58,6 +58,10 @@ interface GeoHashGrid extends BucketAggregationWithField {
   type: 'geohash_grid';
   settings?: {
     precision?: string;
+    top?: string;
+    bottom?: string;
+    left?: string;
+    right?: string;
   };
 }
 

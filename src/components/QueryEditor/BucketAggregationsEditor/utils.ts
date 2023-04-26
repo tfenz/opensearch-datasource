@@ -24,6 +24,10 @@ export const bucketAggregationConfig: BucketsConfiguration = {
     requiresField: true,
     defaultSettings: {
       precision: '3',
+      left: '',
+      top: '',
+      right: '',
+      bottom: '',
     },
   },
   date_histogram: {
