@@ -2,7 +2,6 @@ import { describeMetric } from '../../../../utils';
 import { useQuery } from '../../OpenSearchQueryContext';
 import { BucketAggregation } from '../aggregations';
 import { bucketAggregationConfig, orderByOptions, orderOptions } from '../utils';
-import { getTemplateSrv } from '@grafana/runtime';
 
 const hasValue = (value: string) => (object: { value: string }) => object.value === value;
 
