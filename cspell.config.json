@@ -42,7 +42,9 @@
     "instancemgmt",
     "lastname",
     "lucene",
+    "lvta0909",
     "memlock",
+    "middlewares",
     "millis",
     "mmap",
     "moredata",
@@ -90,6 +92,8 @@
     "idastambuk",
     "katebrenner",
     "iwysiu",
-    "sarahzinger"
+    "sarahzinger",
+    "jaegertracing",
+    "Prepper"
   ]
 }

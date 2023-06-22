@@ -1,7 +1,6 @@
 package opensearch
 
 import (
-	"fmt"
 	"testing"
 	"time"
 
@@ -10,14 +9,14 @@ import (
 	es "github.com/grafana/opensearch-datasource/pkg/opensearch/client"
 	"github.com/grafana/opensearch-datasource/pkg/tsdb"
 	. "github.com/smartystreets/goconvey/convey"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestExecuteTimeSeriesQuery(t *testing.T) {
 	from := time.Date(2018, 5, 15, 17, 50, 0, 0, time.UTC)
 	to := time.Date(2018, 5, 15, 17, 55, 0, 0, time.UTC)
-	fromStr := fmt.Sprintf("%d", from.UnixNano()/int64(time.Millisecond))
-	toStr := fmt.Sprintf("%d", to.UnixNano()/int64(time.Millisecond))
-
+	fromMs := from.UnixNano() / int64(time.Millisecond)
+	toMs := to.UnixNano() / int64(time.Millisecond)
 	Convey("Test execute time series query", t, func() {
 		Convey("With defaults on Elasticsearch 2.0.0", func() {
 			c := newFakeClient(es.Elasticsearch, "2.0.0")
@@ -30,14 +29,14 @@ func TestExecuteTimeSeriesQuery(t *testing.T) {
 			sr := c.multisearchRequests[0].Requests[0]
 			rangeFilter := sr.Query.Bool.Filters[0].(*es.RangeFilter)
 			So(rangeFilter.Key, ShouldEqual, c.timeField)
-			So(rangeFilter.Lte, ShouldEqual, toStr)
-			So(rangeFilter.Gte, ShouldEqual, fromStr)
+			So(rangeFilter.Lte, ShouldEqual, toMs)
+			So(rangeFilter.Gte, ShouldEqual, fromMs)
 			So(rangeFilter.Format, ShouldEqual, es.DateFormatEpochMS)
 			So(sr.Aggs[0].Key, ShouldEqual, "2")
 			dateHistogramAgg := sr.Aggs[0].Aggregation.Aggregation.(*es.DateHistogramAgg)
 			So(dateHistogramAgg.Field, ShouldEqual, "@timestamp")
-			So(dateHistogramAgg.ExtendedBounds.Min, ShouldEqual, fromStr)
-			So(dateHistogramAgg.ExtendedBounds.Max, ShouldEqual, toStr)
+			So(dateHistogramAgg.ExtendedBounds.Min, ShouldEqual, fromMs)
+			So(dateHistogramAgg.ExtendedBounds.Max, ShouldEqual, toMs)
 		})
 
 		Convey("With defaults on Elasticsearch 5.0.0", func() {
@@ -51,8 +50,8 @@ func TestExecuteTimeSeriesQuery(t *testing.T) {
 			sr := c.multisearchRequests[0].Requests[0]
 			So(sr.Query.Bool.Filters[0].(*es.RangeFilter).Key, ShouldEqual, c.timeField)
 			So(sr.Aggs[0].Key, ShouldEqual, "2")
-			So(sr.Aggs[0].Aggregation.Aggregation.(*es.DateHistogramAgg).ExtendedBounds.Min, ShouldEqual, fromStr)
-			So(sr.Aggs[0].Aggregation.Aggregation.(*es.DateHistogramAgg).ExtendedBounds.Max, ShouldEqual, toStr)
+			So(sr.Aggs[0].Aggregation.Aggregation.(*es.DateHistogramAgg).ExtendedBounds.Min, ShouldEqual, fromMs)
+			So(sr.Aggs[0].Aggregation.Aggregation.(*es.DateHistogramAgg).ExtendedBounds.Max, ShouldEqual, toMs)
 		})
 
 		Convey("With multiple bucket aggs", func() {
@@ -385,6 +384,43 @@ func TestExecuteTimeSeriesQuery(t *testing.T) {
 			So(movingAvgAgg.Aggregation.Type, ShouldEqual, "moving_avg")
 			pl := movingAvgAgg.Aggregation.Aggregation.(*es.PipelineAggregation)
 			So(pl.BucketPath, ShouldEqual, "3")
+		})
+
+		t.Run(`With moving average without "pipelineAgg" in input gets "pipelineAggField" from "field"`, func(t *testing.T) {
+			c := newFakeClient(es.OpenSearch, "1.0.0")
+			_, err := executeTsdbQuery(c, `{
+				"timeField": "@timestamp",
+				"bucketAggs": [
+					{ "type": "date_histogram", "field": "@timestamp", "id": "4" }
+				],
+				"metrics": [
+					{ "id": "3", "type": "sum", "field": "@value" },
+					{
+						"id": "2",
+						"type": "moving_avg",
+						"field": "3"
+					}
+				]
+			}`, from, to, 15*time.Second)
+			assert.Nil(t, err)
+			sr := c.multisearchRequests[0].Requests[0]
+
+			firstLevel := sr.Aggs[0]
+			assert.Equal(t, "4", firstLevel.Key)
+			assert.Equal(t, "date_histogram", firstLevel.Aggregation.Type)
+			assert.Len(t, firstLevel.Aggregation.Aggs, 2)
+
+			sumAgg := firstLevel.Aggregation.Aggs[0]
+			assert.Equal(t, "3", sumAgg.Key)
+			assert.Equal(t, "sum", sumAgg.Aggregation.Type)
+			mAgg := sumAgg.Aggregation.Aggregation.(*es.MetricAggregation)
+			assert.Equal(t, "@value", mAgg.Field)
+
+			movingAvgAgg := firstLevel.Aggregation.Aggs[1]
+			assert.Equal(t, "2", movingAvgAgg.Key)
+			assert.Equal(t, "moving_avg", movingAvgAgg.Aggregation.Type)
+			pl := movingAvgAgg.Aggregation.Aggregation.(*es.PipelineAggregation)
+			assert.Equal(t, "3", pl.BucketPath)
 		})
 
 		Convey("With moving average doc count", func() {

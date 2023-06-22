@@ -6,13 +6,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	simplejson "github.com/bitly/go-simplejson"
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
-	"github.com/grafana/opensearch-datasource/pkg/null"
 	es "github.com/grafana/opensearch-datasource/pkg/opensearch/client"
-	"github.com/grafana/opensearch-datasource/pkg/tsdb"
 	"github.com/grafana/opensearch-datasource/pkg/utils"
 )
 
@@ -75,29 +74,20 @@ func (rp *responseParser) getTimeSeries() (*backend.QueryDataResponse, error) {
 		queryRes := backend.DataResponse{
 			Frames: data.Frames{},
 		}
-		// queryRes.Meta = debugInfo
 		props := make(map[string]string)
-		table := tsdb.Table{
-			Columns: make([]tsdb.TableColumn, 0),
-			Rows:    make([]tsdb.RowValues, 0),
-		}
-		err := rp.processBuckets(res.Aggregations, target, &queryRes.Frames, &table, props, 0)
+		err := rp.processBuckets(res.Aggregations, target, &queryRes, props, 0)
 		if err != nil {
 			return nil, err
 		}
-		rp.nameSeries(&queryRes.Frames, target)
+		rp.nameFields(&queryRes.Frames, target)
 		rp.trimDatapoints(&queryRes.Frames, target)
-
-		// if len(table.Rows) > 0 {
-		// 	queryRes.Tables = append(queryRes.Tables, &table)
-		// }
 
 		result.Responses[target.RefID] = queryRes
 	}
 	return result, nil
 }
 
-func (rp *responseParser) processBuckets(aggs map[string]interface{}, target *Query, series *data.Frames, table *tsdb.Table, props map[string]string, depth int) error {
+func (rp *responseParser) processBuckets(aggs map[string]interface{}, target *Query, queryResult *backend.DataResponse, props map[string]string, depth int) error {
 	var err error
 	maxDepth := len(target.BucketAggs) - 1
 
@@ -116,9 +106,9 @@ func (rp *responseParser) processBuckets(aggs map[string]interface{}, target *Qu
 
 		if depth == maxDepth {
 			if aggDef.Type == dateHistType {
-				err = rp.processMetrics(esAgg, target, series, props)
+				err = rp.processMetrics(esAgg, target, &queryResult.Frames, props)
 			} else {
-				err = rp.processAggregationDocs(esAgg, aggDef, target, table, props)
+				err = rp.processAggregationDocs(esAgg, aggDef, target, queryResult, props)
 			}
 			if err != nil {
 				return err
@@ -141,7 +131,7 @@ func (rp *responseParser) processBuckets(aggs map[string]interface{}, target *Qu
 				if key, err := bucket.Get("key_as_string").String(); err == nil {
 					newProps[aggDef.Field] = key
 				}
-				err = rp.processBuckets(bucket.MustMap(), target, series, table, newProps, depth+1)
+				err = rp.processBuckets(bucket.MustMap(), target, queryResult, newProps, depth+1)
 				if err != nil {
 					return err
 				}
@@ -164,7 +154,7 @@ func (rp *responseParser) processBuckets(aggs map[string]interface{}, target *Qu
 
 				newProps["filter"] = bucketKey
 
-				err = rp.processBuckets(bucket.MustMap(), target, series, table, newProps, depth+1)
+				err = rp.processBuckets(bucket.MustMap(), target, queryResult, newProps, depth+1)
 				if err != nil {
 					return err
 				}
@@ -182,30 +172,27 @@ func (rp *responseParser) processMetrics(esAgg *simplejson.Json, target *Query, 
 
 		switch metric.Type {
 		case countType:
-			// newSeries := tsdb.TimeSeries{
-			// 	Tags: make(map[string]string),
-			// }
 			buckets := esAgg.Get("buckets").MustArray()
-			newFrame := data.NewFrame(target.Alias,
-				data.NewFieldFromFieldType(data.FieldTypeNullableTime, len(buckets)),
-				data.NewFieldFromFieldType(data.FieldTypeNullableFloat64, len(buckets)),
-			)
-			valueField := newFrame.Fields[1]
-			valueField.Labels = data.Labels{}
+			labels := make(map[string]string, len(props))
+			timeVector := make([]*time.Time, 0, len(buckets))
+			values := make([]*float64, 0, len(buckets))
 
-			for i, v := range buckets {
+			for _, v := range buckets {
 				bucket := utils.NewJsonFromAny(v)
-				value := castToNullFloat(bucket.Get("doc_count"))
-				key := castToNullFloat(bucket.Get("key"))
-				setFrameRow(newFrame, i, key, value)
-				// newSeries.Points = append(newSeries.Points, tsdb.TimePoint{value, key})
+				timeValue, err := getAsTime(bucket.Get("key"))
+				if err != nil {
+					return err
+				}
+
+				timeVector = append(timeVector, &timeValue)
+				values = append(values, castToFloat(bucket.Get("doc_count")))
 			}
 
 			for k, v := range props {
-				valueField.Labels[k] = v
+				labels[k] = v
 			}
-			valueField.Labels["metric"] = countType
-			*frames = append(*frames, newFrame)
+			labels["metric"] = countType
+			*frames = append(*frames, data.Frames{newTimeSeriesFrame(timeVector, labels, values)}...)
 
 		case percentilesType:
 			buckets := esAgg.Get("buckets").MustArray()
@@ -222,31 +209,29 @@ func (rp *responseParser) processMetrics(esAgg *simplejson.Json, target *Query, 
 			}
 			sort.Strings(percentileKeys)
 			for _, percentileName := range percentileKeys {
-				newFrame := data.NewFrame(target.Alias,
-					data.NewFieldFromFieldType(data.FieldTypeNullableTime, len(buckets)),
-					data.NewFieldFromFieldType(data.FieldTypeNullableFloat64, len(buckets)),
-				)
-				valueField := newFrame.Fields[1]
-				valueField.Labels = data.Labels{}
+				labels := make(map[string]string, len(props))
+				timeVector := make([]*time.Time, 0, len(buckets))
+				values := make([]*float64, 0, len(buckets))
 
 				for k, v := range props {
-					valueField.Labels[k] = v
+					labels[k] = v
 				}
-				valueField.Labels["metric"] = "p" + percentileName
-				valueField.Labels["field"] = metric.Field
+				labels["metric"] = "p" + percentileName
+				labels["field"] = metric.Field
 
-				for i, v := range buckets {
+				for _, v := range buckets {
 					bucket := utils.NewJsonFromAny(v)
-					value := castToNullFloat(bucket.GetPath(metric.ID, "values", percentileName))
-					key := castToNullFloat(bucket.Get("key"))
-					setFrameRow(newFrame, i, key, value)
-					// newSeries.Points = append(newSeries.Points, tsdb.TimePoint{value, key})
+					timeValue, err := getAsTime(bucket.Get("key"))
+					if err != nil {
+						return err
+					}
+					timeVector = append(timeVector, &timeValue)
+					values = append(values, castToFloat(bucket.GetPath(metric.ID, "values", percentileName)))
 				}
-				*frames = append(*frames, newFrame)
+				*frames = append(*frames, data.Frames{newTimeSeriesFrame(timeVector, labels, values)}...)
 			}
 		case extendedStatsType:
 			buckets := esAgg.Get("buckets").MustArray()
-
 			metaKeys := make([]string, 0)
 			meta := metric.Meta.MustMap()
 			for k := range meta {
@@ -259,121 +244,151 @@ func (rp *responseParser) processMetrics(esAgg *simplejson.Json, target *Query, 
 					continue
 				}
 
-				newFrame := data.NewFrame(target.Alias,
-					data.NewFieldFromFieldType(data.FieldTypeNullableTime, len(buckets)),
-					data.NewFieldFromFieldType(data.FieldTypeNullableFloat64, len(buckets)),
-				)
-				valueField := newFrame.Fields[1]
-				valueField.Labels = data.Labels{}
+				labels := make(map[string]string, len(props))
+				timeVector := make([]*time.Time, 0, len(buckets))
+				values := make([]*float64, 0, len(buckets))
 
 				for k, v := range props {
-					valueField.Labels[k] = v
+					labels[k] = v
 				}
-				valueField.Labels["metric"] = statName
-				valueField.Labels["field"] = metric.Field
+				labels["metric"] = statName
+				labels["field"] = metric.Field
 
-				for i, v := range buckets {
+				for _, v := range buckets {
 					bucket := utils.NewJsonFromAny(v)
-					key := castToNullFloat(bucket.Get("key"))
-					var value null.Float
+					timeValue, err := getAsTime(bucket.Get("key"))
+					if err != nil {
+						return err
+					}
+					var value *float64
 					switch statName {
 					case "std_deviation_bounds_upper":
-						value = castToNullFloat(bucket.GetPath(metric.ID, "std_deviation_bounds", "upper"))
+						value = castToFloat(bucket.GetPath(metric.ID, "std_deviation_bounds", "upper"))
 					case "std_deviation_bounds_lower":
-						value = castToNullFloat(bucket.GetPath(metric.ID, "std_deviation_bounds", "lower"))
+						value = castToFloat(bucket.GetPath(metric.ID, "std_deviation_bounds", "lower"))
 					default:
-						value = castToNullFloat(bucket.GetPath(metric.ID, statName))
+						value = castToFloat(bucket.GetPath(metric.ID, statName))
 					}
-					setFrameRow(newFrame, i, key, value)
-					// newSeries.Points = append(newSeries.Points, tsdb.TimePoint{value, key})
+					timeVector = append(timeVector, &timeValue)
+					values = append(values, value)
 				}
-				*frames = append(*frames, newFrame)
+				*frames = append(*frames, data.Frames{newTimeSeriesFrame(timeVector, labels, values)}...)
 			}
 		default:
 			buckets := esAgg.Get("buckets").MustArray()
-
-			newFrame := data.NewFrame(target.Alias,
-				data.NewFieldFromFieldType(data.FieldTypeNullableTime, len(buckets)),
-				data.NewFieldFromFieldType(data.FieldTypeNullableFloat64, len(buckets)),
-			)
-			valueField := newFrame.Fields[1]
-			valueField.Labels = data.Labels{}
+			tags := make(map[string]string, len(props))
+			timeVector := make([]*time.Time, 0, len(buckets))
+			values := make([]*float64, 0, len(buckets))
 
 			for k, v := range props {
-				valueField.Labels[k] = v
+				tags[k] = v
 			}
-			valueField.Labels["metric"] = metric.Type
-			valueField.Labels["field"] = metric.Field
-			valueField.Labels["metricId"] = metric.ID
+			tags["metric"] = metric.Type
+			tags["field"] = metric.Field
+			tags["metricId"] = metric.ID
 
-			for i, v := range buckets {
+			for _, v := range buckets {
 				bucket := utils.NewJsonFromAny(v)
-				key := castToNullFloat(bucket.Get("key"))
+				timeValue, err := getAsTime(bucket.Get("key"))
+				if err != nil {
+					return err
+				}
 				valueObj, err := bucket.Get(metric.ID).Map()
 				if err != nil {
 					continue
 				}
-				var value null.Float
+				var value *float64
 				if _, ok := valueObj["normalized_value"]; ok {
-					value = castToNullFloat(bucket.GetPath(metric.ID, "normalized_value"))
+					value = castToFloat(bucket.GetPath(metric.ID, "normalized_value"))
 				} else {
-					value = castToNullFloat(bucket.GetPath(metric.ID, "value"))
+					value = castToFloat(bucket.GetPath(metric.ID, "value"))
 				}
-				setFrameRow(newFrame, i, key, value)
-				// newSeries.Points = append(newSeries.Points, tsdb.TimePoint{value, key})
+				timeVector = append(timeVector, &timeValue)
+				values = append(values, value)
 			}
-			*frames = append(*frames, newFrame)
+			*frames = append(*frames, data.Frames{newTimeSeriesFrame(timeVector, tags, values)}...)
 		}
 	}
 	return nil
 }
 
-func (rp *responseParser) processAggregationDocs(esAgg *simplejson.Json, aggDef *BucketAgg, target *Query, table *tsdb.Table, props map[string]string) error {
+func newTimeSeriesFrame(timeData []*time.Time, labels map[string]string, values []*float64) *data.Frame {
+	frame := data.NewFrame("",
+		data.NewField(data.TimeSeriesTimeFieldName, nil, timeData),
+		data.NewField(data.TimeSeriesValueFieldName, labels, values))
+	frame.Meta = &data.FrameMeta{
+		Type: data.FrameTypeTimeSeriesMulti,
+	}
+	return frame
+}
+
+func getAsTime(j *simplejson.Json) (time.Time, error) {
+	// these are stored as numbers
+	number, err := j.Float64()
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	return time.UnixMilli(int64(number)).UTC(), nil
+}
+
+func (rp *responseParser) processAggregationDocs(esAgg *simplejson.Json, aggDef *BucketAgg, target *Query, queryResult *backend.DataResponse, props map[string]string) error {
 	propKeys := make([]string, 0)
 	for k := range props {
 		propKeys = append(propKeys, k)
 	}
 	sort.Strings(propKeys)
+	frames := data.Frames{}
+	var fields []*data.Field
 
-	if len(table.Columns) == 0 {
+	if queryResult.Frames == nil {
 		for _, propKey := range propKeys {
-			table.Columns = append(table.Columns, tsdb.TableColumn{Text: propKey})
+			fields = append(fields, data.NewField(propKey, nil, []*string{}))
 		}
-		table.Columns = append(table.Columns, tsdb.TableColumn{Text: aggDef.Field})
-	}
-
-	addMetricValue := func(values *tsdb.RowValues, metricName string, value null.Float) {
-		found := false
-		for _, c := range table.Columns {
-			if c.Text == metricName {
-				found = true
-				break
-			}
-		}
-		if !found {
-			table.Columns = append(table.Columns, tsdb.TableColumn{Text: metricName})
-		}
-		*values = append(*values, value)
 	}
 
 	for _, v := range esAgg.Get("buckets").MustArray() {
 		bucket := utils.NewJsonFromAny(v)
-		values := make(tsdb.RowValues, 0)
 
-		for _, propKey := range propKeys {
-			values = append(values, props[propKey])
+		found := false
+		for _, e := range fields {
+			for _, propKey := range propKeys {
+				if e.Name == propKey {
+					e.Append(props[propKey])
+				}
+			}
+			if e.Name == aggDef.Field {
+				found = true
+				if key, err := bucket.Get("key").String(); err == nil {
+					e.Append(&key)
+				} else {
+					f, err := bucket.Get("key").Float64()
+					if err != nil {
+						return err
+					}
+					e.Append(&f)
+				}
+			}
 		}
 
-		if key, err := bucket.Get("key").String(); err == nil {
-			values = append(values, key)
-		} else {
-			values = append(values, castToNullFloat(bucket.Get("key")))
+		if !found {
+			var aggDefField *data.Field
+			if key, err := bucket.Get("key").String(); err == nil {
+				aggDefField = extractDataField(aggDef.Field, &key)
+			} else {
+				f, err := bucket.Get("key").Float64()
+				if err != nil {
+					return err
+				}
+				aggDefField = extractDataField(aggDef.Field, &f)
+			}
+			fields = append(fields, aggDefField)
 		}
 
 		for _, metric := range target.Metrics {
 			switch metric.Type {
 			case countType:
-				addMetricValue(&values, rp.getMetricName(metric.Type), castToNullFloat(bucket.Get("doc_count")))
+				fields = addMetricValue(fields, rp.getMetricName(metric.Type), castToFloat(bucket.Get("doc_count")))
 			case extendedStatsType:
 				metaKeys := make([]string, 0)
 				meta := metric.Meta.MustMap()
@@ -387,17 +402,17 @@ func (rp *responseParser) processAggregationDocs(esAgg *simplejson.Json, aggDef 
 						continue
 					}
 
-					var value null.Float
+					var value *float64
 					switch statName {
 					case "std_deviation_bounds_upper":
-						value = castToNullFloat(bucket.GetPath(metric.ID, "std_deviation_bounds", "upper"))
+						value = castToFloat(bucket.GetPath(metric.ID, "std_deviation_bounds", "upper"))
 					case "std_deviation_bounds_lower":
-						value = castToNullFloat(bucket.GetPath(metric.ID, "std_deviation_bounds", "lower"))
+						value = castToFloat(bucket.GetPath(metric.ID, "std_deviation_bounds", "lower"))
 					default:
-						value = castToNullFloat(bucket.GetPath(metric.ID, statName))
+						value = castToFloat(bucket.GetPath(metric.ID, statName))
 					}
 
-					addMetricValue(&values, rp.getMetricName(metric.Type), value)
+					fields = addMetricValue(fields, rp.getMetricName(metric.Type), value)
 					break
 				}
 			default:
@@ -418,14 +433,52 @@ func (rp *responseParser) processAggregationDocs(esAgg *simplejson.Json, aggDef 
 					}
 				}
 
-				addMetricValue(&values, metricName, castToNullFloat(bucket.GetPath(metric.ID, "value")))
+				fields = addMetricValue(fields, metricName, castToFloat(bucket.GetPath(metric.ID, "value")))
 			}
 		}
 
-		table.Rows = append(table.Rows, values)
+		var dataFields []*data.Field
+		dataFields = append(dataFields, fields...)
+
+		frames = data.Frames{
+			&data.Frame{
+				Fields: dataFields,
+			},
+		}
 	}
 
+	queryResult.Frames = frames
 	return nil
+}
+
+func addMetricValue(fields []*data.Field, metricName string, value *float64) []*data.Field {
+	var index int
+	found := false
+	for i, f := range fields {
+		if f.Name == metricName {
+			index = i
+			found = true
+			break
+		}
+	}
+
+	var newField *data.Field
+	if !found {
+		newField = data.NewField(metricName, nil, []*float64{})
+		fields = append(fields, newField)
+	} else {
+		newField = fields[index]
+	}
+	newField.Append(value)
+	return fields
+}
+
+func extractDataField[KeyType *string | *float64](name string, key KeyType) *data.Field {
+	field := data.NewField(name, nil, []KeyType{})
+	isFilterable := true
+	field.Config = &data.FieldConfig{Filterable: &isFilterable}
+	field.Append(key)
+	return field
 }
 
 func (rp *responseParser) trimDatapoints(frames *data.Frames, target *Query) {
@@ -454,32 +507,38 @@ func (rp *responseParser) trimDatapoints(frames *data.Frames, target *Query) {
 			for i := f.Rows() - trimEdges; i < f.Rows(); i++ {
 				f.DeleteRow(i)
 			}
-			// f.Points = f.Points[trimEdges : len(f.Points)-trimEdges]
 		}
 	}
 }
 
-func (rp *responseParser) nameSeries(frames *data.Frames, target *Query) {
-	set := make(map[string]string)
+func (rp *responseParser) nameFields(frames *data.Frames, target *Query) {
+	set := make(map[string]struct{})
 	for _, v := range *frames {
-		if len(v.Fields) > 1 {
-			valueField := v.Fields[1]
-			if metricType, exists := valueField.Labels["metric"]; exists {
+		for _, vv := range v.Fields {
+			if metricType, exists := vv.Labels["metric"]; exists {
 				if _, ok := set[metricType]; !ok {
-					set[metricType] = ""
+					set[metricType] = struct{}{}
 				}
 			}
 		}
 	}
 	metricTypeCount := len(set)
 	for _, series := range *frames {
-		series.Name = rp.getSeriesName(series, target, metricTypeCount)
+		if series.Meta != nil && series.Meta.Type == data.FrameTypeTimeSeriesMulti {
+			// if it is a time-series-multi, it means it has two columns, one is "time",
+			// another is "number"
+			valueField := series.Fields[1]
+			if valueField.Config == nil {
+				valueField.Config = &data.FieldConfig{}
+			}
+			valueField.Config.DisplayNameFromDS = rp.getFieldName(series, target, metricTypeCount)
+		}
 	}
 }
 
 var aliasPatternRegex = regexp.MustCompile(`\{\{([\s\S]+?)\}\}`)
 
-func (rp *responseParser) getSeriesName(series *data.Frame, target *Query, metricTypeCount int) string {
+func (rp *responseParser) getFieldName(series *data.Frame, target *Query, metricTypeCount int) string {
 	if len(series.Fields) < 2 {
 		return target.Alias
 	}
@@ -546,7 +605,7 @@ func (rp *responseParser) getSeriesName(series *data.Frame, target *Query, metri
 			found := false
 			for _, metric := range target.Metrics {
 				if metric.ID == field {
-					metricName += " " + describeMetric(metric.Type, field)
+					metricName += " " + describeMetric(metric.Type, metric.Field)
 					found = true
 				}
 			}
@@ -588,23 +647,23 @@ func (rp *responseParser) getMetricName(metric string) string {
 	return metric
 }
 
-func castToNullFloat(j *simplejson.Json) null.Float {
+func castToFloat(j *simplejson.Json) *float64 {
 	f, err := j.Float64()
 	if err == nil {
-		return null.FloatFrom(f)
+		return &f
 	}
 
 	if s, err := j.String(); err == nil {
 		if strings.ToLower(s) == "nan" {
-			return null.NewFloat(0, false)
+			return nil
 		}
 
 		if v, err := strconv.ParseFloat(s, 64); err == nil {
-			return null.FloatFromPtr(&v)
+			return &v
 		}
 	}
 
-	return null.NewFloat(0, false)
+	return nil
 }
 
 func findAgg(target *Query, aggID string) (*BucketAgg, error) {
@@ -632,14 +691,4 @@ func getErrorFromOpenSearchResponse(response *es.SearchResponse) error {
 	}
 
 	return err
-}
-
-func setFrameRow(frame *data.Frame, i int, ntime null.Float, value null.Float) {
-	frame.Set(0, i, utils.NullFloatToNullableTime(ntime))
-
-	if value.Valid {
-		frame.Set(1, i, &value.Float64)
-	} else {
-		frame.Set(1, i, nil)
-	}
 }

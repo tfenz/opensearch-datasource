@@ -2,6 +2,44 @@
 
 All notable changes to this project will be documented in this file.
 
+## v2.6.2
+
+* Backend: Convert tables to data frames by @fridgepoet in https://github.com/grafana/opensearch-datasource/pull/186
+* Refactor PPL and Lucene time series response processing to return DataFrames by @idastambuk in https://github.com/grafana/opensearch-datasource/pull/188
+* Backend: Use int64 type instead of string for from/to date times by @fridgepoet in https://github.com/grafana/opensearch-datasource/pull/191
+
+
+## v2.6.1
+
+* Backend: Fix SigV4 when creating client by @fridgepoet in https://github.com/grafana/opensearch-datasource/pull/183
+
+## v2.6.0
+
+* Ability to select order (Desc/Asc) for "raw data" metrics aggregations by @lvta0909 in https://github.com/grafana/opensearch-datasource/pull/88
+* Backend: Set field.Config.DisplayNameFromDS instead of frame.name by @fridgepoet in https://github.com/grafana/opensearch-datasource/pull/180
+
+## v2.5.1
+
+* Fix backend pipeline aggregation query parsing and data frame building in https://github.com/grafana/opensearch-datasource/pull/168
+
+## v2.5.0
+
+### Features and Enhancements:
+
+- OpenSearch version detection added [#120](https://github.com/grafana/opensearch-datasource/issues/120)
+
+### Bug Fixes:
+
+- Fix query editor misalignment (#163)
+- Fix use case when a panel has queries of different types (#141)
+
+## v2.4.1
+
+### Bug Fixes:
+
+- Security: Upgrade Go in build process to 1.20.4
+- Update grafana-plugin-sdk-go version to 0.161.0
+
 ## v2.4.0
 
 ### Features and Enhancements:
