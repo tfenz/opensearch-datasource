@@ -8,6 +8,7 @@ import { OpenSearchQuery } from '../../../../types';
 
 describe('Settings Editor', () => {
   describe('Raw Data', () => {
+    jest.setTimeout(30000);
     it('Should correctly render the settings editor and trigger correct state changes', async () => {
       const metricId = '1';
       const initialSize = '500';

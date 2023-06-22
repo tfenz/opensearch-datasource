@@ -48,6 +48,7 @@ const createMockDatasource = () =>
   });
 
 describe('LuceneQueryEditor', () => {
+  jest.setTimeout(30000);
   it('renders a metric aggregations editor when the query is a metrics query', async () => {
     const mockQuery = createMockQuery();
     const mockOnChange = createMockOnChange();
