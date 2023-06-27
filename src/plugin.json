@@ -1,7 +1,7 @@
 {
   "type": "datasource",
   "name": "OpenSearch OEBB BoundingBox Filter",
-  "id": "oebb-opensearch-datasource",
+  "id": "tfenz-opensearch-datasource",
   "category": "logging",
   "alerting": true,
   "annotations": true,
@@ -11,7 +11,7 @@
 
   "executable": "gpx_opensearch-datasource",
   "info": {
-    "description": "OEBB extension to support bounging box filter in geohash aggregations",
+    "description": "OEBB extension to support bounding box filter in geo hash grid aggregations",
     "author": {
       "name": "Grafana Labs",
       "url": "https://grafana.com"
