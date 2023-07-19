@@ -14,7 +14,7 @@ type SearchRequestBuilder struct {
 	interval     tsdb.Interval
 	index        string
 	size         int
-	sort         map[string]interface{}
+	sort         []map[string]map[string]string
 	queryBuilder *QueryBuilder
 	aggBuilders  []AggBuilder
 	customProps  map[string]interface{}
@@ -26,7 +26,7 @@ func NewSearchRequestBuilder(flavor Flavor, version *semver.Version, interval ts
 		flavor:      flavor,
 		version:     version,
 		interval:    interval,
-		sort:        make(map[string]interface{}),
+		sort:        make([]map[string]map[string]string, 0),
 		customProps: make(map[string]interface{}),
 		aggBuilders: make([]AggBuilder, 0),
 	}
@@ -72,17 +72,22 @@ func (b *SearchRequestBuilder) Size(size int) *SearchRequestBuilder {
 	return b
 }
 
-// SortDesc adds a sort to the search request
-func (b *SearchRequestBuilder) SortDesc(field, unmappedType string) *SearchRequestBuilder {
+const defaultOrder = "desc"
+
+// Sort adds a sort to the search request
+func (b *SearchRequestBuilder) Sort(order, field, unmappedType string) *SearchRequestBuilder {
+	if order != "desc" && order != "asc" {
+		order = defaultOrder
+	}
 	props := map[string]string{
-		"order": "desc",
+		"order": order,
 	}
 
 	if unmappedType != "" {
 		props["unmapped_type"] = unmappedType
 	}
 
-	b.sort[field] = props
+	b.sort = append(b.sort, map[string]map[string]string{field: props})
 
 	return b
 }
@@ -99,6 +104,14 @@ func (b *SearchRequestBuilder) AddDocValueField(field string) *SearchRequestBuil
 	}
 
 	return b
+}
+
+// AddTimeFieldWithStandardizedFormat adds timeField as field with standardized time format to not receive
+// invalid formats that Elasticsearch/OpenSearch can parse, but our frontend can't (e.g. yyyy_MM_dd_HH_mm_ss)
+// https://opensearch.org/docs/latest/api-reference/search/#request-body
+// https://opensearch.org/docs/latest/field-types/supported-field-types/date/#full-date-formats
+func (b *SearchRequestBuilder) AddTimeFieldWithStandardizedFormat(timeField string) {
+	b.customProps["fields"] = []map[string]string{{"field": timeField, "format": "strict_date_optional_time_nanos"}}
 }
 
 // Query creates and return a query builder

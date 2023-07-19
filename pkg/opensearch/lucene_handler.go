@@ -1,6 +1,7 @@
 package opensearch
 
 import (
+	"fmt"
 	"strconv"
 	"time"
 
@@ -43,30 +44,56 @@ func (h *luceneHandler) processQuery(q *Query) error {
 	b := h.ms.Search(interval)
 	b.Size(0)
 	filters := b.Query().Bool().Filter()
-	filters.AddDateRangeFilter(h.client.GetTimeField(), es.DateFormatEpochMS, toMs, fromMs)
+	defaultTimeField := h.client.GetConfiguredFields().TimeField
+	filters.AddDateRangeFilter(defaultTimeField, es.DateFormatEpochMS, toMs, fromMs)
 
 	if q.RawQuery != "" {
 		filters.AddQueryStringFilter(q.RawQuery, true)
 	}
 
 	if len(q.BucketAggs) == 0 {
-		if len(q.Metrics) == 0 || q.Metrics[0].Type != "raw_document" {
-			return nil
+		// If no aggregations, only document and logs queries are valid
+		if len(q.Metrics) == 0 || !(q.Metrics[0].Type == rawDataType || q.Metrics[0].Type == rawDocumentType) {
+			return fmt.Errorf("invalid query, missing metrics and aggregations")
 		}
-		metric := q.Metrics[0]
-		b.Size(metric.Settings.Get("size").MustInt(500))
-		b.SortDesc("@timestamp", "boolean")
-		b.AddDocValueField("@timestamp")
-		return nil
 	}
 
+	switch q.Metrics[0].Type {
+	case rawDocumentType, rawDataType:
+		processDocumentQuery(q, b, defaultTimeField)
+	default:
+		processTimeSeriesQuery(q, b, fromMs, toMs, defaultTimeField)
+	}
+
+	return nil
+}
+
+const defaultSize = 500
+
+func processDocumentQuery(q *Query, b *es.SearchRequestBuilder, defaultTimeField string) {
+	metric := q.Metrics[0]
+	order := metric.Settings.Get("order").MustString()
+	b.Sort(order, defaultTimeField, "boolean")
+	b.Sort(order, "_doc", "")
+	b.AddTimeFieldWithStandardizedFormat(defaultTimeField)
+	sizeString := metric.Settings.Get("size").MustString()
+	size, err := strconv.Atoi(sizeString)
+	if err != nil {
+		size = defaultSize
+	}
+	b.Size(size)
+}
+
+func processTimeSeriesQuery(q *Query, b *es.SearchRequestBuilder, fromMs int64, toMs int64, defaultTimeField string) {
+	metric := q.Metrics[0]
+	b.Size(metric.Settings.Get("size").MustInt(500))
 	aggBuilder := b.Agg()
 
 	// iterate backwards to create aggregations bottom-down
 	for _, bucketAgg := range q.BucketAggs {
 		switch bucketAgg.Type {
 		case dateHistType:
-			aggBuilder = addDateHistogramAgg(aggBuilder, bucketAgg, fromMs, toMs)
+			aggBuilder = addDateHistogramAgg(aggBuilder, bucketAgg, fromMs, toMs, defaultTimeField)
 		case histogramType:
 			aggBuilder = addHistogramAgg(aggBuilder, bucketAgg)
 		case filtersType:
@@ -143,8 +170,6 @@ func (h *luceneHandler) processQuery(q *Query) error {
 			})
 		}
 	}
-
-	return nil
 }
 
 func getPipelineAggField(m *MetricAgg) string {
@@ -177,11 +202,16 @@ func (h *luceneHandler) executeQueries() (*backend.QueryDataResponse, error) {
 	}
 
 	rp := newResponseParser(res.Responses, h.queries, res.DebugInfo)
-	return rp.getTimeSeries()
+	return rp.getTimeSeries(h.client.GetConfiguredFields())
 }
 
-func addDateHistogramAgg(aggBuilder es.AggBuilder, bucketAgg *BucketAgg, timeFrom, timeTo int64) es.AggBuilder {
-	aggBuilder.DateHistogram(bucketAgg.ID, bucketAgg.Field, func(a *es.DateHistogramAgg, b es.AggBuilder) {
+func addDateHistogramAgg(aggBuilder es.AggBuilder, bucketAgg *BucketAgg, timeFrom, timeTo int64, timeField string) es.AggBuilder {
+	// If no field is specified, use the time field
+	field := bucketAgg.Field
+	if field == "" {
+		field = timeField
+	}
+	aggBuilder.DateHistogram(bucketAgg.ID, field, func(a *es.DateHistogramAgg, b es.AggBuilder) {
 		a.Interval = bucketAgg.Settings.Get("interval").MustString("auto")
 		a.MinDocCount = bucketAgg.Settings.Get("min_doc_count").MustInt(0)
 		a.ExtendedBounds = &es.ExtendedBounds{Min: timeFrom, Max: timeTo}
